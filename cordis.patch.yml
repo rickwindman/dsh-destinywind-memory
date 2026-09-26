@@ -1,0 +1,4 @@
+- insert:
+    - id: destinywind-memory
+      name: dsh-destinywind-memory
+      config: {}

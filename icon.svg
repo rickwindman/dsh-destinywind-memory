@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="长期记忆库">
+  <defs>
+    <linearGradient id="hmBrain" x1="16" y1="12" x2="46" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8B6CF6"/>
+      <stop offset="0.55" stop-color="#5B7BF0"/>
+      <stop offset="1" stop-color="#3FA9DD"/>
+    </linearGradient>
+    <linearGradient id="hmTile" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F4F0FF"/>
+      <stop offset="1" stop-color="#E4ECFF"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#hmTile)"/>
+
+  <!-- Brain (memory) outline: the section names the seat of memory -->
+  <path
+    d="M31 15.5c-4.6-4.6-12.4-3.1-13.6 3-4.6 1.2-6.6 6.2-3.9 9.6-2.9 3.6-.8 9.4 3.9 10.4.9 5.2 7.4 7.1 11 3.2"
+    stroke="url(#hmBrain)" stroke-width="3.6" stroke-linecap="round" fill="none"/>
+
+  <!-- Gyri: the folds that hold a memory -->
+  <path d="M38.5 15.6c5.2-.6 9.5 3.7 8.5 8.9 3.5 2.1 4.1 7 1 9.8 1.3 4.4-2.4 8.6-6.9 8.1" stroke="url(#hmBrain)" stroke-width="3.6" stroke-linecap="round" fill="none"/>
+  <path d="M27.4 22.4c2.9-1.5 6.4-.3 7.6 2.7 1.2 3-1.4 6.2-4.6 6.2-3.3 0-5.7-3.3-4.4-6.4" stroke="url(#hmBrain)" stroke-width="3.2" stroke-linecap="round" fill="none"/>
+  <path d="M41 29.4c2.3-1 4.9.1 5.8 2.4" stroke="url(#hmBrain)" stroke-width="3" stroke-linecap="round" fill="none"/>
+
+  <!-- Stem: the retrieval path -->
+  <path d="M33.2 41.6c-.4 2.6-1.9 4.4-4.2 5.4" stroke="url(#hmBrain)" stroke-width="3.4" stroke-linecap="round" fill="none"/>
+
+  <!-- Memory node, pinned to the seat of the recall -->
+  <circle cx="42.5" cy="45.5" r="8.4" fill="#fff" fill-opacity="0.92"/>
+  <circle cx="42.5" cy="45.5" r="5.7" fill="#8B6CF6"/>
+  <circle cx="42.5" cy="45.5" r="2.1" fill="#fff"/>
+</svg>
