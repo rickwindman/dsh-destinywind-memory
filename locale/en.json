@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Memory",
-    "description": "Durable memory bank: add or remove entries on the Settings \"Memory\" page; every entry is injected into all sessions' system prompt (edit data via the HTTP API)."
+    "description": "Durable memory bank saved as Markdown (memory.md): edit the file directly and the change takes effect immediately. Every memory is injected into all sessions' system prompt, with hard constraints reinforced once more."
   }
 }

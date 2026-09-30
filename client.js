@@ -14,10 +14,13 @@ window.__ModuleLoader__.load({
 
     async function apiList() {
       const res = await fetch(`${API_BASE}/memories`, { headers: { accept: 'application/json' } });
-      if (!res.ok) throw new Error(`读取失败 (HTTP ${String(res.status)})`);
+      if (!res.ok) throw new Error(`读取记忆失败（HTTP ${String(res.status)}）`);
       const body = await res.json();
-      if (!body || body.ok !== true) throw new Error(String((body && body.error) || '读取失败'));
-      return Array.isArray(body.memories) ? body.memories : [];
+      if (!body || body.ok !== true) throw new Error(String((body && body.error) || '读取记忆失败'));
+      return {
+        memories: Array.isArray(body.memories) ? body.memories : [],
+        file: String(body.file || ''),
+      };
     }
 
     async function apiAdd(text, tags) {
@@ -26,21 +29,22 @@ window.__ModuleLoader__.load({
         headers: { 'content-type': 'application/json; charset=utf-8' },
         body: JSON.stringify({ text, tags }),
       });
-      if (!res.ok) throw new Error(`添加失败 (HTTP ${String(res.status)})`);
+      if (!res.ok) throw new Error(`保存失败（HTTP ${String(res.status)}）`);
       const body = await res.json();
-      if (!body || body.ok !== true) throw new Error(String((body && body.error) || '添加失败'));
+      if (!body || body.ok !== true) throw new Error(String((body && body.error) || '保存失败'));
       return body.entry;
     }
 
     async function apiRemove(id) {
       const res = await fetch(`${API_BASE}/memories/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`删除失败 (HTTP ${String(res.status)})`);
+      if (!res.ok) throw new Error(`删除失败（HTTP ${String(res.status)}）`);
       const body = await res.json();
       if (!body || body.ok !== true) throw new Error(String((body && body.error) || '删除失败（条目可能不存在）'));
     }
 
     function MemorySettingsPage() {
       const [memories, setMemories] = React.useState(null);
+      const [filePath, setFilePath] = React.useState('');
       const [draft, setDraft] = React.useState('');
       const [draftTags, setDraftTags] = React.useState('');
       const [error, setError] = React.useState('');
@@ -49,8 +53,9 @@ window.__ModuleLoader__.load({
 
       const refresh = React.useCallback(async () => {
         try {
-          const list = await apiList();
+          const { memories: list, file } = await apiList();
           setMemories(list);
+          setFilePath(file);
           setError('');
         } catch (err) {
           setError(String((err && err.message) || err));
@@ -116,17 +121,20 @@ window.__ModuleLoader__.load({
       return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 640 } },
         React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
           React.createElement('div', { style: { fontSize: 13, color: textSecondary } },
-            '长期记忆库：这里的每一条记忆都会注入 Agent 的系统提示词，跨会话生效。',
+            '每条记忆都会注入 Agent 的系统提示词，跨会话生效；标记为硬性约束的条目还会额外注入一次。',
           ),
           React.createElement('div', { style: { fontSize: 12, color: textSecondary, opacity: 0.75 } },
-            '数据保存在 DSH_HOME/destinywind-memory/memory.json',
+            '数据以 Markdown 保存，可直接编辑该文件；保存后自动生效，无需重启。删除对应小节即删除该条记忆。',
           ),
+          React.createElement('div', {
+            style: { fontSize: 11, color: textSecondary, opacity: 0.55, wordBreak: 'break-all', fontFamily: 'ui-monospace, monospace' },
+          }, filePath ? `记忆文件：${filePath}` : '记忆文件：读取中…'),
         ),
 
         React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
           React.createElement('textarea', {
             value: draft,
-            placeholder: '添加一条记忆，例如：我的主力编程语言是 Python，代码注释用中文。',
+            placeholder: '添加一条记忆，例如：开发 exe/apk 时必须保留可反编译结构。（标题自动取正文首句）',
             rows: 3,
             maxLength: 8000,
             style: inputStyle,
@@ -148,8 +156,14 @@ window.__ModuleLoader__.load({
         ),
 
         React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-          React.createElement('div', { style: { fontSize: 12, color: textSecondary } },
-            `已有记忆（${memories === null ? '…' : rows.length} 条）`,
+          React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+            React.createElement('div', { style: { fontSize: 12, color: textSecondary, flex: 1 } },
+              `记忆条目（${memories === null ? '…' : rows.length} 条）`,
+            ),
+            React.createElement('button', {
+              type: 'button', style: secondaryButtonStyle, disabled: busy,
+              onClick: () => { void refresh(); },
+            }, '刷新'),
           ),
           loaded && rows.length === 0
             ? React.createElement('div', { style: { fontSize: 13, color: textSecondary, padding: '12px 0' } }, '还没有记忆，添加第一条吧。')
@@ -158,15 +172,15 @@ window.__ModuleLoader__.load({
                 style: { display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 12px', borderRadius: 10, background: surface, border: `1px solid ${border}` },
               },
                 React.createElement('div', { style: { flex: 1, minWidth: 0 } },
-                  React.createElement('div', { style: { fontSize: 13, color: textPrimary, whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, entry.text),
+                  React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: textPrimary, wordBreak: 'break-word' } }, entry.title || '（无标题）'),
+                  entry.text && entry.text !== entry.title
+                    ? React.createElement('div', { style: { fontSize: 12, color: textSecondary, marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, entry.text)
+                    : null,
                   React.createElement('div', { style: { display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' } },
                     (entry.tags || []).map(tag => React.createElement('span', {
                       key: tag,
                       style: { fontSize: 11, padding: '1px 8px', borderRadius: 999, border: `1px solid ${border}`, color: textSecondary },
                     }, tag)),
-                    React.createElement('span', { style: { fontSize: 11, color: textSecondary, opacity: 0.7 } },
-                      new Date(entry.createdAt).toLocaleString(),
-                    ),
                   ),
                 ),
                 React.createElement('button', {

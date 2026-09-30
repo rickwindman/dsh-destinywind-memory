@@ -2,3 +2,5 @@
     - id: destinywind-memory
       name: dsh-destinywind-memory
       config: {}
+      # 可选配置（不写即为默认值）：
+      #   tailReminder: true    # 在系统提示末尾注入一行「记忆核对」自检提醒；设为 false 关闭
