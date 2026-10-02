@@ -124,7 +124,7 @@ window.__ModuleLoader__.load({
             '每条记忆都会注入 Agent 的系统提示词，跨会话生效；标记为硬性约束的条目还会额外注入一次。',
           ),
           React.createElement('div', { style: { fontSize: 12, color: textSecondary, opacity: 0.75 } },
-            '数据以 Markdown 保存，可直接编辑该文件；保存后自动生效，无需重启。删除对应小节即删除该条记忆。',
+            '数据以 SQLite 保存，正文原样存取，不受 Markdown 语法影响；在下方增删即可，无需重启。',
           ),
           React.createElement('div', {
             style: { fontSize: 11, color: textSecondary, opacity: 0.55, wordBreak: 'break-all', fontFamily: 'ui-monospace, monospace' },

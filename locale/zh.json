@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "记忆",
-    "description": "长期记忆库：以 Markdown（memory.md）保存，可直接编辑、保存即生效；每条记忆都注入所有会话的系统提示，硬性约束额外强化一次。"
+    "description": "长期记忆库：以 SQLite（memory.sqlite）保存，正文原样存取不受 Markdown 语法影响；每条记忆都注入所有会话的系统提示，硬性约束额外强化一次。"
   }
 }

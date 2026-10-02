@@ -1,41 +1,49 @@
 # dsh-destinywind-memory
 
-在 DeepSeek Harness Web GUI 的设置面板中提供长期记忆库：**Markdown 存储、可直接编辑、保存即生效**，并且用三层注入让 Agent 真的按记忆做事。
+在 DeepSeek Harness Web GUI 的设置面板中提供长期记忆库：**SQLite 存储、正文原样存取、不受 Markdown 语法影响**，并且用三层注入让 Agent 真的按记忆做事。
 
 ## 它做什么
 
-- 设置面板新增「记忆」页（`settings.section` Slot，`order: 16`）：紧跟在设置导航的「插件」页之下、排在「技能」页之上；可添加（带可选标签）、浏览、删除记忆条目，也可点「刷新」重新读取文件。
-- 记忆保存在一个**人类可读的 Markdown 文件**里，插件按文件修改时间自动重载：用编辑器、别的 AI、脚本改这个文件都立即生效，**不需要重启、也不需要走 API**。
-- ⚠️ 反过来，**Agent 自己改不了这个文件**：`DSH_HOME`（默认 `%USERPROFILE%\.dsh`）在工作区之外，DSH 沙箱拒绝 Agent 直接写；Agent 增删记忆**只能走 HTTP API**（见下）。你自己用编辑器改则不受影响。
+- 设置面板新增「记忆」页（`settings.section` Slot，`order: 16`）：紧跟在设置导航的「插件」页之下、排在「技能」页之上；可添加（带可选标签）、浏览、删除记忆条目，也可点「刷新」重新读取。
+- 记忆保存在一个 **SQLite 数据库**里（`memory.sqlite`），正文按原样存取：**写进去是什么，读出来就是什么**。
 - 每条记忆注入**所有**会话的系统提示词。
 - 纯插件实现：不修改 DSH 任何其他文件。
 
+## 为什么是 SQLite 而不是 Markdown
+
+v1 用 `memory.md` 保存，靠 `##` 标题划分条目。这带来一个**会静默损坏数据**的缺陷：
+
+| 你写的正文 | v1 的后果 |
+|---|---|
+| 含一行以 `## ` 开头（如 `## 二级标题`） | 该条被**拆成两条**，标题被吞掉 |
+| 含形如 `<!-- tags: x -->` 的注释 | 这一行的内容被当作**真标签**写回 |
+| 含 `###`、列表、引用、代码围栏 | 在无标题的宽松解析下可能被**当成结构丢弃** |
+
+数据库没有这个歧义：正文是一个不透明的值，任何解析器都不会再去解释它。所以从 v2 起改用 SQLite。
+
 ## 存储格式
 
-`%USERPROFILE%\.dsh\destinywind-memory\memory.md`（`DSH_HOME` 环境变量可覆盖）
+`%USERPROFILE%\.dsh\destinywind-memory\memory.sqlite`（`DSH_HOME` 环境变量可覆盖）
 
-```markdown
-# 长期记忆库
+```sql
+CREATE TABLE memories (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,  -- 条目 id，单调递增、删除后不复用
+  title      TEXT NOT NULL DEFAULT '',           -- 摘要，缺省取正文首句
+  text       TEXT NOT NULL,                      -- 正文，原样保存
+  created_at TEXT NOT NULL DEFAULT (...)
+) STRICT;
 
-> 本文件由 dsh-destinywind-memory 插件管理……
-
-## 思考和回复必须使用中文
-<!-- tags: 偏好 -->
-
-思考和回复必须使用中文，禁止使用英文回复和思考。
-
-## MCP github 读大文件报错
-<!-- tags: github, 排错 -->
-
-MCP github 读大文件报 embedded resource unsupported 时改 web_fetch 拉 raw……
+CREATE TABLE tags (
+  memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  tag       TEXT    NOT NULL,
+  position  INTEGER NOT NULL,                    -- 保留标签书写顺序
+  PRIMARY KEY (memory_id, tag)
+) STRICT;
 ```
 
-规则：
-
-- 每条记忆是一个 `##` 小节：**标题是摘要，正文是内容**。删除整个小节即删除该条记忆。
-- 正文前可写 `<!-- tags: a, b -->` 声明标签（可选）。
-- 宽容解析：**如果文件里没有任何 `##` 小节**（例如你直接把一份随手写的 Markdown 笔记丢进来），则每个 `-` 开头的列表项、或每个空行分隔的段落各算一条记忆；一级标题、`>` 引用块和 HTML 注释会被忽略。
+- 数据库文件就是一个普通 SQLite 文件，可用任意 SQLite 客户端打开；运行中也可复制（WAL 模式下读不会阻塞写）。
 - 上限：正文 8000 字符（超出截断）、标签最多 12 个、条目最多 1000。
+- **不再有 Markdown 镜像文件。** `memory.md` 只作为升级迁移的输入读取一次，此后不再读写；升级时会改名为 `memory.md.v1.bak` 保留。
 
 ## 为什么 Agent 会按记忆做事
 
@@ -56,64 +64,81 @@ config:
   tailReminder: false
 ```
 
-## 从 v1（JSON）升级
+## 从 v1（Markdown / JSON）升级
 
-第一次读取时若 `memory.md` 不存在，会自动把旧库迁移过来并**改名备份**，不会丢记忆：
+v2 首次启动时会**自动导入**旧库，然后改名备份（不会丢记忆）：
 
 | 旧位置 | 处理 |
 |---|---|
-| `destinywind-memory/memory.json`（v1 格式） | 迁移为 `memory.md`，原文件改名为 `memory.json.v1.bak` |
-| `hindsight-memory/memory.json`（更早的插件名） | 同样迁移，原文件改名为 `memory.json.v1.bak` |
+| `destinywind-memory/memory.md`（v1.1） | 解析后导入 SQLite，原文件改名为 `memory.md.v1.bak` |
+| `destinywind-memory/memory.json`（v1.0） | 导入，原文件改名为 `memory.json.v1.bak` |
+| `hindsight-memory/memory.json`（更早的插件名） | 同样导入，原文件改名备份 |
 
-两者都不存在时，以空库启动，且**不会**创建任何文件，直到第一次写入。
+迁移只执行一次，用 `.migrated-to-sqlite` 标记文件记录。若数据库里已有条目，则不会把遗留文件合并进来（避免重复）。旧文件解析失败时**原地保留**，不会在背后改名。三者都不存在时以空库启动，且**不会**创建任何文件，直到第一次写入。
+
+> 注意：从 v1 的 `memory.md` 导入时，上述 `##` 缺陷**已经发生过的损坏无法自动还原**——被拆成两条的仍然是两条。导入后请检查一遍条目数是否符合预期。
 
 ## HTTP API（可选）
 
-设置页用的就是这套接口；你也可以在脚本里调用。API 与手工编辑等价。
+设置页用的就是这套接口；你也可以在脚本里调用。
 
 | 操作 | 请求 |
 |---|---|
 | 列表 | `GET /dsh-destinywind-memory/memories` → `{ ok, memories: [{id,title,text,tags}], file }` |
 | 新增 | `POST /dsh-destinywind-memory/memories`，body `{ text, title?, tags? }`（标题缺省取正文首句） |
-| 删除 | `DELETE /dsh-destinywind-memory/memories/<id>`，`id` 是该条在文件中的序号（从 1 开始） |
+| 删除 | `DELETE /dsh-destinywind-memory/memories/<id>`，`id` 是数据库主键 |
+
+端口按实际运行的 DSH Web 端口填（不一定是 3080）：
 
 ```powershell
+$port = 19387   # 换成你的实际端口
 $body = @{ text = '记忆正文'; tags = @('标签') } | ConvertTo-Json
-Invoke-RestMethod -Method POST -Uri 'http://127.0.0.1:3080/dsh-destinywind-memory/memories' `
+Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:$port/dsh-destinywind-memory/memories" `
   -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
   -ContentType 'application/json; charset=utf-8'
 ```
 
-新条目追加到文件末尾（已有的 `id` 不会被重新编号）。
+新增的条目 id 由数据库自增分配；已有条目的 id 不会因为新增或删除而改变。
 
 ## 推荐写法
 
 记忆库会进入**每一个**对话的系统提示，越短越好：
 
 1. 约束型信息（「必须／禁止」类）直接写清楚，一行一条，可带 `约束` 标签。
-2. 长知识写成技能，记忆里只留一句索引：「需要 X 时加载技能 Y」；技能正文放 `%USERPROFILE%\.dsh\skills\<名字>\SKILL.md`。
+2. 长知识写成技能，记忆里只留一句索引；技能正文放 `%USERPROFILE%\.dsh\skills\<名字>\SKILL.md`。
 3. 更大的资料放磁盘文档，记忆里只给路径。
 
 ## 文件
 
 | 路径 | 作用 |
 |---|---|
-| `index.js` | Host 半：Markdown 存储、HTTP 路由、系统提示词 section / 运行时上下文 / 末尾提醒 |
+| `index.js` | Host 半：SQLite 存储、旧库一次性迁移、HTTP 路由、系统提示词 section / 运行时上下文 / 末尾提醒 |
+| `src/store-sqlite.js` | SQLite 存储层：建表、增删查、事务、WAL |
 | `client.js` | Client 半：设置面板「记忆」页 UI |
 | `cordis.patch.yml` | 把本插件插入 composition（含 `tailReminder` 配置示例） |
 | `locale/zh.json`、`locale/en.json` | 插件元信息文案（中 / 英） |
 | `icon.svg` | 插件图标（大脑剖面 + 记忆节点） |
-| `tests/memory-bank.test.mjs` | 存储解析、迁移、HTTP API、三层注入的回归测试 |
+| `tests/store-sqlite.test.mjs` | 存储层单测：特殊符号往返、id 语义、标签顺序、持久化 |
+| `tests/memory-bank.test.mjs` | 端到端：迁移、HTTP API、三层注入 |
 
-跑测试：`node tests/memory-bank.test.mjs`
+跑测试：
 
-Host 侧改动（`index.js`）**重启 `dsh web`** 生效；Client 侧改动（`client.js`）刷新页面（F5）即可。
+```powershell
+node tests/store-sqlite.test.mjs
+node tests/memory-bank.test.mjs
+# 或
+npm test
+```
+
+需要 **Node ≥ 22.5**（用到内置的 `node:sqlite`，无原生依赖）。
+
+Host 侧改动（`index.js`、`src/`）**重启 `dsh web`** 生效；Client 侧改动（`client.js`）刷新页面（F5）即可。
 
 ## 安装与卸载
 
-- 声明了 `dsh.bundle.patch`，装完即生效：`plugin_manager { action: "install_bundle", target: "<本仓库绝对路径>" }`，安装后重启 `dsh web`。
-- 卸载**不会**删除已存记忆：内容在 `~/.dsh/destinywind-memory/memory.md`，需要自行删除。
-- 若不希望某些条目继续注入对话，删掉对应 `##` 小节，或用设置页 / API 删除。
+- 本插件声明了 `dsh.bundle.patch`，装完即生效。
+- 从 GitHub 安装：`plugin_manager { action: "install_bundle", target: "<owner>/<repo>" }`，安装后重启 `dsh web`。
+- 卸载**不会**删除已存记忆：内容在 `~/.dsh/destinywind-memory/memory.sqlite`，需要自行删除。
 
 ## 许可
 

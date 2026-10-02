@@ -1,14 +1,19 @@
 /**
  * Host half: the long-term memory bank — durable storage, HTTP API, prompt injection.
  *
- * The bank is one human-readable Markdown file (`<DSH_HOME>/destinywind-memory/memory.md`).
- * Every memory is a `##` section: the heading is its summary, the body is its content, and an
- * optional `<!-- tags: a, b -->` comment above the body carries its tags. Because the file *is*
- * the store, it can be edited in any editor; the store re-parses it whenever the file's
- * mtime+size stamp changes, so an external edit reaches the next prompt assembly with no restart.
+ * Storage is SQLite (`<DSH_HOME>/destinywind-memory/memory.sqlite`), reached through Node's
+ * builtin `node:sqlite`. The bank used to be a Markdown file whose `##` headings delimited
+ * entries, which meant a memory body containing a line starting with `## ` was silently split in
+ * two, and a body containing an HTML comment shaped like `<!-- tags: ... -->` had its tags
+ * overwritten. Rows have no such syntax: a body is an opaque value, so it round-trips exactly.
  *
- * The v1 JSON bank (`destinywind-memory/memory.json`, and before it `hindsight-memory/memory.json`)
- * is adopted once on first load and renamed to `*.v1.bak`, so an upgrade never loses memories.
+ * On first start after this change, an existing `memory.md` (or a v1 `memory.json`, from either
+ * `destinywind-memory/` or the pre-rename `hindsight-memory/`) is imported once, then renamed to
+ * `*.v1.bak` so an interrupted migration stays recoverable by hand. The Markdown parser exists
+ * only for that one-time import and is never the live store again.
+ *
+ * The database file is an ordinary SQLite file: readable with any SQLite client, and copyable
+ * while the harness runs (WAL keeps the writer from blocking a reader).
  *
  * Injection happens in three places, because one soft paragraph in the middle of the system
  * prompt is what models skip:
@@ -20,9 +25,10 @@
  *  - a one-line self-check reminder among the trailing sections, the position a model attends to
  *    most reliably.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { collectLegacyJson, openDatabase, retireLegacyFile } from './src/store-sqlite.js';
 
 export const inject = ['webServer', 'systemPrompt'];
 
@@ -44,21 +50,23 @@ const TITLE_FALLBACK_LENGTH = 40;
 const CONSTRAINT_PATTERN = /(必须|禁止|不要|不得|务必|一定要|只能|只用|都要|偏好|约束|规则|规范)/;
 const CONSTRAINT_TAGS = new Set(['约束', '规则', '偏好', '规范', '要求', 'constraint']);
 
-const FILE_HEADER = [
-  '# 长期记忆库',
-  '',
-  '> 本文件由 dsh-destinywind-memory 插件管理。每条记忆是一个 `##` 小节：标题是摘要，正文是内容。',
-  '> 正文前可写 `<!-- tags: a, b -->` 声明标签；带「约束」类标签、或正文含「必须／禁止」等词的条目，会作为硬性约束优先注入。',
-  '> 可直接编辑保存——插件按文件修改时间自动重载，无需重启。删除整个小节即删除该条记忆。',
-].join('\n');
-
 function memoryDir() {
   const home = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh');
   return path.join(home, 'destinywind-memory');
 }
 
-/** The Markdown bank — the store itself. */
-function memoryFile() {
+/** The SQLite bank — the store itself. */
+function databaseFile() {
+  return path.join(memoryDir(), 'memory.sqlite');
+}
+
+/** Marks the one-time legacy import, so an emptied bank is never refilled from a stale file. */
+function migrationMarkerFile() {
+  return path.join(memoryDir(), '.migrated-to-sqlite');
+}
+
+/** The retired Markdown bank, read once for migration and never written again. */
+function legacyMarkdownFile() {
   return path.join(memoryDir(), 'memory.md');
 }
 
@@ -101,17 +109,13 @@ function makeEntry(text, title, tags) {
   };
 }
 
-/** Stable, position-based ids: appending never renumbers earlier entries. */
-function withIds(entries) {
-  return entries.slice(0, MAX_ENTRIES).map((entry, index) => ({ id: String(index + 1), ...entry }));
-}
+// --- legacy Markdown parsing, used only by the one-time import -------------------------------
 
 /**
- * Parse one Markdown bank. `##` sections are the canonical form; a file a user wrote by hand
- * without any `##` heading falls back to one memory per bullet / blank-line paragraph, so an
- * ordinary Markdown notes file still works.
+ * Parse a pre-SQLite Markdown bank. `##` sections were the canonical form; a file written by hand
+ * without any `##` heading fell back to one memory per bullet / blank-line paragraph.
  */
-function parseMarkdown(raw) {
+function parseLegacyMarkdown(raw) {
   const lines = String(raw).replace(/^\uFEFF/, '').split(/\r?\n/);
   const entries = [];
   let current = null;
@@ -134,7 +138,6 @@ function parseMarkdown(raw) {
     if (current === null) continue;
     const meta = /^<!--\s*([A-Za-z]+)\s*:\s*([\s\S]*?)\s*-->$/.exec(line.trim());
     if (meta !== null) {
-      // `created` is v1 export metadata and stays out of the body; unknown comments are kept as prose.
       if (meta[1].toLowerCase() === 'tags' || meta[1].toLowerCase() === 'tag') {
         current.tags = current.tags.concat(splitTags(meta[2]));
         continue;
@@ -183,33 +186,6 @@ function parseLooseEntries(lines) {
   return entries;
 }
 
-/** Serialize the bank back to its Markdown form. */
-function serialize(entries) {
-  const blocks = [FILE_HEADER];
-  for (const entry of entries) {
-    const block = [`## ${entry.title}`];
-    if (entry.tags.length > 0) block.push(`<!-- tags: ${entry.tags.join(', ')} -->`);
-    block.push('', entry.text);
-    blocks.push(block.join('\n'));
-  }
-  return `${blocks.join('\n\n')}\n`;
-}
-
-/**
- * Read a v1 JSON bank (entries are not normalized here — `makeEntry` does that).
- * @returns the entries, or null when the file exists but cannot be read, so a corrupt file is
- *          never renamed out of the way behind the user's back.
- */
-function readJsonEntries(file) {
-  try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'));
-    if (!Array.isArray(parsed?.memories)) return null;
-    return parsed.memories.map(item => makeEntry(item?.text, item?.title, item?.tags)).filter(Boolean);
-  } catch {
-    return null;
-  }
-}
-
 /** A memory reads as a hard constraint when its tags say so or its text reads as an instruction. */
 function isConstraint(entry) {
   if (entry.tags.some(tag => CONSTRAINT_TAGS.has(tag))) return true;
@@ -217,75 +193,70 @@ function isConstraint(entry) {
 }
 
 function createMemoryStore() {
-  let cache = null;
-  let stamp = null;
+  let db = null;
+
+  /** Open lazily so a fresh install creates no file until the first write. */
+  function connection() {
+    if (db === null) {
+      db = openDatabase(databaseFile(), { maxTextLength: MAX_TEXT_LENGTH });
+      migrateOnce(db);
+    }
+    return db;
+  }
 
   /**
-   * Adopt a v1 JSON bank once, when the Markdown bank does not exist yet. The JSON file is
-   * renamed rather than deleted, so a failed migration is still recoverable by hand; a file that
-   * cannot be parsed at all is left exactly where it is.
+   * Import a legacy bank exactly once. The marker file is written last, so an interruption
+   * between the insert and the marker lets the next start retry rather than lose memories.
    */
-  function adoptLegacyJson() {
-    for (const file of [legacyJsonFile(), hindsightJsonFile()]) {
-      if (!existsSync(file)) continue;
-      const entries = readJsonEntries(file);
-      if (entries === null) continue;
+  function migrateOnce(opened) {
+    const marker = migrationMarkerFile();
+    if (existsSync(marker)) return;
+    if (opened.count() > 0) {
+      // A database with rows is already the authority; do not merge a leftover file into it.
       try {
-        renameSync(file, `${file}.v1.bak`);
+        retireLegacyFile(marker);
       } catch {
-        // A locked file stays in place as its own backup; adoption never runs twice anyway.
+        // Non-fatal: the rows are what matter.
       }
-      return entries;
+      return;
     }
-    return [];
+
+    const markdownFile = legacyMarkdownFile();
+    if (existsSync(markdownFile)) {
+      let entries = [];
+      try {
+        entries = parseLegacyMarkdown(readFileSync(markdownFile, 'utf8'));
+      } catch (error) {
+        console.warn('[dsh-destinywind-memory] 读取旧 Markdown 记忆库失败：', error);
+      }
+      if (entries.length > 0) {
+        opened.replaceAll(entries);
+        retireLegacyFile(markdownFile);
+      }
+      return;
+    }
+
+    const jsonEntries = collectLegacyJson([legacyJsonFile(), hindsightJsonFile()], marker);
+    if (jsonEntries.length > 0) {
+      const entries = jsonEntries
+        .map(item => makeEntry(item?.text, item?.title, item?.tags))
+        .filter(entry => entry !== null);
+      if (entries.length > 0) {
+        opened.replaceAll(entries);
+        for (const file of [legacyJsonFile(), hindsightJsonFile()]) {
+          if (existsSync(file)) retireLegacyFile(file);
+        }
+      }
+    }
   }
 
-  function persist(entries) {
-    try {
-      mkdirSync(memoryDir(), { recursive: true });
-      const file = memoryFile();
-      const tmp = `${file}.tmp`;
-      writeFileSync(tmp, serialize(entries), 'utf8');
-      renameSync(tmp, file);
-    } catch (error) {
-      console.warn('[dsh-destinywind-memory] 写入记忆库失败：', error);
-    }
-  }
-
-  /**
-   * Read the bank, re-parsing only when the file changed. This is what makes an edit in an
-   * external editor — or by another agent — visible on the very next prompt assembly.
-   */
-  function load() {
-    const file = memoryFile();
-    let stat = null;
-    try {
-      stat = statSync(file);
-    } catch {
-      stat = null;
-    }
-    const nextStamp = stat === null ? 'missing' : `${String(stat.mtimeMs)}:${String(stat.size)}`;
-    if (cache !== null && nextStamp === stamp) return cache;
-    stamp = nextStamp;
-    if (stat === null) {
-      const adopted = adoptLegacyJson();
-      cache = withIds(adopted);
-      if (adopted.length > 0) persist(adopted);
-      return cache;
-    }
-    cache = withIds(parseMarkdown(readFileSync(file, 'utf8')));
-    return cache;
-  }
-
-  function save(entries) {
-    cache = withIds(entries);
-    stamp = null;
-    persist(cache);
-    return cache;
+  /** @returns the store, migrated if this is the first call after an upgrade. */
+  function store() {
+    return connection();
   }
 
   function renderPrompt() {
-    const items = load();
+    const items = store().list();
     if (items.length === 0) return '';
     const constraints = items.filter(isConstraint);
     const knowledge = items.filter(entry => !isConstraint(entry));
@@ -314,7 +285,7 @@ function createMemoryStore() {
    * no constraint, so an empty bank contributes nothing to the snapshot.
    */
   function renderConstraintContext() {
-    const constraints = load().filter(isConstraint);
+    const constraints = store().list().filter(isConstraint);
     if (constraints.length === 0) return '';
     const lines = ['用户长期记忆库中的硬性约束（用户明确设定，必须遵守；优先级仅次于当前指令）：'];
     for (const entry of constraints) lines.push(`- ${flatten(entry.text)}`);
@@ -323,26 +294,20 @@ function createMemoryStore() {
 
   return {
     list() {
-      return load();
+      return store().list();
     },
     file() {
-      return memoryFile();
+      return databaseFile();
     },
     add(input) {
       const entry = makeEntry(input?.text, input?.title, input?.tags);
       if (entry === null) throw new Error('记忆内容不能为空');
-      // Append: position-based ids of existing entries stay valid.
-      const items = save([...load(), entry]);
-      return items[items.length - 1];
+      if (store().count() >= MAX_ENTRIES) throw new Error(`记忆条目已达上限（${MAX_ENTRIES} 条）`);
+      const id = store().add(entry);
+      return { id, ...entry };
     },
     remove(id) {
-      const items = load();
-      const index = items.findIndex(entry => entry.id === String(id));
-      if (index === -1) return false;
-      const next = items.slice();
-      next.splice(index, 1);
-      save(next);
-      return true;
+      return store().remove(id);
     },
     renderPrompt,
     renderConstraintContext,

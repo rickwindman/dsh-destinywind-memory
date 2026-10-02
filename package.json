@@ -1,10 +1,10 @@
 {
   "name": "dsh-destinywind-memory",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "长期记忆库：以 Markdown（memory.md）保存，可直接编辑、保存即生效；记忆注入所有会话的系统提示，硬性约束额外强化一次。",
+  "description": "长期记忆库：以 SQLite（memory.sqlite）保存，正文原样存取不受 Markdown 语法干扰；记忆注入所有会话的系统提示，硬性约束额外强化一次。",
   "main": "index.js",
   "icon": "./icon.svg",
   "exports": {
@@ -15,6 +15,7 @@
   },
   "files": [
     "index.js",
+    "src/store-sqlite.js",
     "client.js",
     "cordis.patch.yml",
     "locale/zh.json",
@@ -23,6 +24,12 @@
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "node tests/store-sqlite.test.mjs && node tests/memory-bank.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
