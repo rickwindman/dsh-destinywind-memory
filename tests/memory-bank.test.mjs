@@ -81,12 +81,17 @@ const dbFile = join(storeDir, 'memory.sqlite');
 
 // --- Scenario 1: a fresh install renders nothing and creates no file --------------------------
 {
-  const fresh = mount(tempHome());
+  const home = tempHome();
+  const fresh = mount(home);
   assert.equal(fresh.section(SECTION), '', 'a fresh install renders an empty section');
   assert.equal(fresh.context(CONTEXT), '', 'a fresh install renders an empty runtime context');
   assert.equal(fresh.section(REMINDER), '', 'a fresh install renders no reminder');
   const listed = JSON.parse((await call(fresh, 'GET', '/dsh-destinywind-memory/memories')).payload);
   assert.deepEqual(listed.memories, [], 'a fresh install lists no memories');
+  assert.ok(
+    !existsSync(join(home, 'destinywind-memory', '.migrated-to-sqlite')),
+    'a fresh install must not create a migration marker out of nothing',
+  );
 }
 
 // --- Scenario 2: the bodies that used to break the Markdown parser survive intact -------------
@@ -178,6 +183,7 @@ assert.deepEqual(stored.memories[1].tags, ['测试'], 'a body shaped like tag me
   assert.ok(existsSync(join(dir, 'memory.sqlite')), 'the import creates the SQLite bank');
   assert.ok(existsSync(`${mdFile}.v1.bak`), 'the Markdown bank is kept as a backup');
   assert.ok(!existsSync(mdFile), 'the Markdown bank is renamed, not left active');
+  assert.ok(existsSync(join(dir, '.migrated-to-sqlite')), 'the one-time import leaves a marker');
 
   // A second mount must not re-import the retired file.
   const again = mount(home);
@@ -229,6 +235,7 @@ assert.deepEqual(stored.memories[1].tags, ['测试'], 'a body shaped like tag me
   assert.ok(rendered.includes('禁止使用 powershell 5.1'), 'adopted entry must render into the prompt');
   assert.ok(existsSync(`${join(dir, 'memory.json')}.v1.bak`), 'the v1 JSON file must be kept as a backup');
   assert.ok(!existsSync(join(dir, 'memory.json')), 'the v1 JSON file must be renamed, not left active');
+  assert.ok(existsSync(join(dir, '.migrated-to-sqlite')), 'the JSON import leaves a marker');
 }
 
 // --- Scenario 8: a corrupt v1 bank is left where it is, and never renamed ---------------------
@@ -253,6 +260,32 @@ assert.deepEqual(stored.memories[1].tags, ['测试'], 'a body shaped like tag me
   const legacy = mount(home);
   assert.ok(legacy.section(SECTION).includes('旧目录收养条目'), 'the pre-rename bank is adopted');
   assert.ok(existsSync(join(home, 'hindsight-memory', 'memory.json.v1.bak')), 'the pre-rename file is kept as a backup');
+}
+
+// --- Scenario 10: the marker stops a stale legacy file from refilling an emptied bank ----------
+{
+  const home = tempHome();
+  const dir = join(home, 'destinywind-memory');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'memory.json'), JSON.stringify({
+    memories: [{ id: 'old', text: '迁移前的老条目', tags: [] }],
+  }), 'utf8');
+
+  const first = mount(home);
+  assert.ok(first.section(SECTION).includes('迁移前的老条目'), 'the JSON bank is adopted');
+  assert.ok(existsSync(join(dir, '.migrated-to-sqlite')), 'the import leaves a marker');
+
+  // Simulate a user who deletes every memory, plus a stale legacy file that reappears.
+  const ids = JSON.parse((await call(first, 'GET', '/dsh-destinywind-memory/memories')).payload).memories.map(e => e.id);
+  for (const id of ids) await call(first, 'DELETE', `/dsh-destinywind-memory/memories/${id}`);
+  assert.equal(JSON.parse((await call(first, 'GET', '/dsh-destinywind-memory/memories')).payload).memories.length, 0, 'the bank is emptied');
+  writeFileSync(join(dir, 'memory.json'), JSON.stringify({
+    memories: [{ id: 'stale', text: '不该被重新灌入的旧条目', tags: [] }],
+  }), 'utf8');
+
+  const second = mount(home);
+  assert.ok(!second.section(SECTION).includes('不该被重新灌入的旧条目'), 'a stale legacy file must not refill an emptied bank');
+  assert.ok(existsSync(join(dir, 'memory.json')), 'the stale file is left untouched when it is not imported');
 }
 
 assert.ok(existsSync(dbFile), 'the bank database exists on disk');

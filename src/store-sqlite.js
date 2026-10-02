@@ -13,7 +13,7 @@
  * SQLite comes from Node's builtin `node:sqlite` (stable since Node 24), so the plugin needs no
  * native dependency and stays installable from a plain git URL.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -194,6 +194,26 @@ export function retireLegacyFile(file) {
     renameSync(file, `${file}.v1.bak`);
   } catch {
     // A locked file stays in place as its own backup; adoption never runs twice anyway.
+  }
+}
+
+/**
+ * Record that the one-time legacy import is finished.
+ *
+ * Written after the rows are committed and the legacy files are retired, so a crash in between
+ * leaves no marker and the next start retries instead of losing memories. Without this marker an
+ * intentionally emptied bank would be refilled from a stale file, and the import would re-run on
+ * every start.
+ *
+ * @returns true when the marker is in place (already present counts as success).
+ */
+export function markMigrated(markerFile) {
+  try {
+    writeFileSync(markerFile, `migrated-to-sqlite ${new Date().toISOString()}\n`, 'utf8');
+    return true;
+  } catch {
+    // Failing to write the marker only costs a redundant retry; it never corrupts the bank.
+    return false;
   }
 }
 

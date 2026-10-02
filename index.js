@@ -28,7 +28,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { collectLegacyJson, openDatabase, retireLegacyFile } from './src/store-sqlite.js';
+import { collectLegacyJson, markMigrated, openDatabase, retireLegacyFile } from './src/store-sqlite.js';
 
 export const inject = ['webServer', 'systemPrompt'];
 
@@ -205,19 +205,18 @@ function createMemoryStore() {
   }
 
   /**
-   * Import a legacy bank exactly once. The marker file is written last, so an interruption
-   * between the insert and the marker lets the next start retry rather than lose memories.
+   * Import a legacy bank exactly once. The marker is written last — after the rows are committed
+   * and the legacy files are retired — so a crash in between leaves no marker and the next start
+   * retries rather than losing memories.
    */
   function migrateOnce(opened) {
     const marker = migrationMarkerFile();
     if (existsSync(marker)) return;
+
+    // A database with rows is already the authority. Record that no legacy file may be merged in,
+    // so a stale file left on disk can never reintroduce deleted memories.
     if (opened.count() > 0) {
-      // A database with rows is already the authority; do not merge a leftover file into it.
-      try {
-        retireLegacyFile(marker);
-      } catch {
-        // Non-fatal: the rows are what matter.
-      }
+      markMigrated(marker);
       return;
     }
 
@@ -232,7 +231,9 @@ function createMemoryStore() {
       if (entries.length > 0) {
         opened.replaceAll(entries);
         retireLegacyFile(markdownFile);
+        markMigrated(marker);
       }
+      // Nothing usable in the file: leave it in place, and without a marker so a later fix retries.
       return;
     }
 
@@ -246,8 +247,13 @@ function createMemoryStore() {
         for (const file of [legacyJsonFile(), hindsightJsonFile()]) {
           if (existsSync(file)) retireLegacyFile(file);
         }
+        markMigrated(marker);
       }
+      return;
     }
+
+    // No legacy file anywhere. Deliberately no marker: a fresh install must not create any file
+    // before its first write, and there is nothing to protect against.
   }
 
   /** @returns the store, migrated if this is the first call after an upgrade. */
